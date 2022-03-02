@@ -28,6 +28,9 @@ static bool verbose = false;
 	fprintf(stderr, LOG_SIGNATURE LOG_YELLOW " WARNING "__VA_ARGS__); \
 	fprintf(stderr, LOG_REGULAR);
 
+#define INIT_ROOT "conf/init/"
+#define MOD_DIR INIT_ROOT "mods/"
+
 int main(int argc, char* argv[]) {
 	// parse arguments
 
