@@ -1,5 +1,7 @@
 # aquabsd-init
 
+*** ⚠️⚠️⚠️ CURRENTLY UNDER CONSTRUCTION, MUCH OF THIS WORK IS STILL PRIVATE ⚠️⚠️⚠️ ***
+
 Replacement for the Research Unix-style init system on aquaBSD.
 `init` is the first process launched on the system, and is the one which is at the root of all subsequent processes.
 It launches, manages, and maintains background services (e.g. `sshd`, `ntpd`, `dhclient`).
