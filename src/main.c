@@ -71,6 +71,8 @@ typedef struct {
 	char** dep_names;
 	service_t** deps;
 
+	bool check_circular_passed;
+
 	// kind-specific members
 
 	union {
@@ -104,7 +106,6 @@ static int fill_research_service(service_t* service) {
 		return -1;
 	}
 
-	const char DELIMS[] = { '\\', '\\', '\0' };
 	char* buf;
 
 	// now that's what I call a BIG GRAYSON
@@ -117,7 +118,7 @@ static int fill_research_service(service_t* service) {
 
 	for (
 		enum { BEFORE_PARSING, PARSING, PARSING_DONE } state = BEFORE_PARSING;
-		state != PARSING_DONE && (buf = fparseln(fp, NULL, NULL, DELIMS, 0));
+		state != PARSING_DONE && (buf = fparseln(fp, NULL, NULL, "\\\\", 0));
 		free(buf)
 	) {
 		#define DIRECTIVE(lower, upper) \
@@ -255,6 +256,26 @@ static service_t* search_services(size_t services_len, service_t** services, con
 	// couldn't find service!
 
 	return NULL;
+}
+
+static bool check_circular(service_t* service) {
+	if (service->check_circular_passed) {
+		return true;
+	}
+
+	service->check_circular_passed = true;
+
+	for (size_t i = 0; i < service->deps_len; i++) {
+		service_t* dep = service->deps[i];
+
+		if (check_circular(dep)) {
+			return true;
+		}
+	}
+
+	service->check_circular_passed = false;
+
+	return false;
 }
 
 int main(int argc, char* argv[]) {
@@ -405,7 +426,15 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	// TODO check for circular dependencies
+	// check for circular dependencies
+
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
+
+		if (check_circular(service)) {
+			FATAL_ERROR("Found circular dependency")
+		}
+	}
 
 	// free services
 
