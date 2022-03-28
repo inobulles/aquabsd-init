@@ -53,6 +53,8 @@ typedef enum {
 } service_kind_t;
 
 typedef struct {
+	size_t provides_len;
+	char** provides;
 } service_research_t;
 
 typedef struct {
@@ -86,7 +88,7 @@ static service_t* new_service(const char* name) {
 	return service;
 }
 
-static int fill_search_service(service_t* service) {
+static int fill_research_service(service_t* service) {
 	// yeah, this function really isn't pretty, but I'd rather make is as compact as possible with ugly macros as I don't really want this to be the focus of this source file
 
 	service->kind = SERVICE_KIND_RESEARCH;
@@ -156,6 +158,17 @@ static int fill_search_service(service_t* service) {
 		service->dep_names[service->deps_len - 1] = strdup(str);
 	}
 
+	// parse 'provide' as, well, provide
+
+	while ((str = strsep(provide, " \t\n"))) {
+		if (!*str) {
+			continue;
+		}
+
+		service->research.provides = realloc(service->research.provides, ++service->research.provides_len * sizeof *service->research.provides);
+		service->research.provides[service->research.provides_len - 1] = strdup(str);
+	}
+
 	// free everything
 
 	fclose(fp);
@@ -185,11 +198,63 @@ static void del_service(service_t* service) {
 			free((thing)); \
 		}
 
+	for (size_t i = 0; i < service->deps_len; i++) {
+		FREE(service->dep_names[i])
+	}
+
+	if (service->deps) {
+		FREE(service->deps)
+	}
+
+	if (service->kind == SERVICE_KIND_RESEARCH) {
+		for (size_t i = 0; i < service->research.provides_len; i++) {
+			FREE(service->research.provides[i])
+		}
+
+		if (service->research.provides) {
+			FREE(service->research.provides)
+		}
+	}
+
 	FREE(service->name)
 	FREE(service->path)
 
 	#undef FREE
 	free(service);
+}
+
+static bool research_service_provides(service_t* service, const char* name) {
+	if (service->kind != SERVICE_KIND_RESEARCH) {
+		return false;
+	}
+
+	for (size_t i = 0; i < service->research.provides_len; i++) {
+		char* provide = service->research.provides[i];
+
+		if (strcmp(provide, name) == 0) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static service_t* search_services(size_t services_len, service_t** services, const char* name) {
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
+
+		if (strcmp(service->name, name) == 0) {
+			return service;
+		}
+
+		if (research_service_provides(service, name)) {
+			return service;
+		}
+	}
+
+	// couldn't find service!
+
+	return NULL;
 }
 
 int main(int argc, char* argv[]) {
@@ -326,9 +391,21 @@ int main(int argc, char* argv[]) {
 		fill_research_service(service);
 	}
 
-	// resolve service dependencies
+	// resolve service dependencies (this is where we build the dependency graph)
+	// yeah, this code has a pretty horrid time complexity  O(n^2)), can absolutely do better (O(n) ideally assuming no hashmap collisions)
 
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
 
+		service->deps = malloc(service->deps_len * sizeof *service->deps);
+
+		for (size_t j = 0; j < service->deps_len; j++) {
+			char* name = service->dep_names[j];
+			service->deps[j] = search_services(services_len, services, name);
+		}
+	}
+
+	// TODO check for circular dependencies
 
 	// free services
 
