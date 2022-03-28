@@ -45,6 +45,36 @@ static bool verbose = false;
 #define INIT_ROOT "conf/init/"
 #define MOD_DIR INIT_ROOT "mods/"
 
+typedef struct {
+	char* name;
+
+	size_t deps_len;
+	service_t** deps;
+} service_t;
+
+static service_t* new_service(const char* name) {
+	service_t* service = calloc(1, sizeof *service);
+	service->name = strdup(name);
+
+	return service;
+}
+
+static void fill_search_service(service_t* service) {
+	// TODO read the service script, similar to what rcorder(8) does on NetBSD
+}
+
+static void del_service(service_t* service) {
+	if (!service) {
+		return;
+	}
+
+	if (service->name) {
+		free(service->name);
+	}
+
+	free(service);
+}
+
 int main(int argc, char* argv[]) {
 	// parse arguments
 	// TODO should this be done with 'getopt' like the other aquaBSD programs instead?
@@ -131,9 +161,63 @@ int main(int argc, char* argv[]) {
 	// NOTES (cf. rc.d(8)):
 	//  - autoboot=yes/rc_fast=yes for skipping checks and speeding stuff up
 	//  - skip everything with the 'nostart' keyword if the $firstboot_sentinel file exists (and 'firstboot' if it's the first time the system is booting after installation - this is for services such as 'growfs' for resizing the root filesystem if it wasn't already done by the installer)
-	//  - execute services until $early_late_divider is reached (what $early_late_divider is/means, not a fucking clue)
-	//  - check the firstboot again (incase we've moved to a different fs - could this be what $early_late_divider is?)
+	//  - execute services until $early_late_divider is reached ('early_late_divider=FILESYSTEMS', ensure root & "critical" filesystems are mounted basically)
+	//  - check the firstboot again (incase we've moved to a different fs)
 	//  - delete $firstboot_sentinel (& $firstboot_sentinel"-reboot" if that exists, in which case reboot)
+
+	size_t services_len = 0;
+	service_t** services = NULL;
+
+	// read all the legacy research Unix-style services in '/etc/rc.d'
+
+	DIR* dp = opendir("/etc/rc.d");
+
+	if (!dp) {
+		FATAL_ERROR("opendir(\"/etc/rc.d\"): %s\n", strerror(errno))
+	}
+
+	struct dirent* entry;
+
+	while ((entry = readdir(dp))) {
+		if (entry->d_type != DT_REG) {
+			continue; // anything other than a regular file is invalid
+		}
+
+		if (*entry->d_name == '.') {
+			continue; // don't care about '.', '..', & other entries starting with a dot
+		}
+
+		struct stat sb;
+
+		if (stat(entry->d_name, &sb) < 0) {
+			FATAL_ERROR("stat(\"%s\"): %s\n", entry->d_name, strerror(errno))
+		}
+
+		mode_t permissions = sb.st_flags & 0777;
+
+		if (permissions == 0555) {
+			FATAL_ERROR("\"%s\" doesn't have the right permissions ('0%o', needs '0555')\n", entry->d_name, permissions)
+		}
+
+		// okay! add the service
+
+		service_t* service = new_service(entry->d_name);
+
+		services = realloc(services, ++services_len * sizeof *services);
+		services[services_len - 1] = service;
+
+		fill_research_service(service);
+	}
+
+	// free services
+
+	for (size_t i = 0; i < services_len; i++) {
+		del_service(services[i]);
+	}
+
+	if (services) {
+		free(services);
+	}
 
 	// remove the message queue completely (this most likely indicated a shutdown/reboot, so it doesn't matter all that much what happens here)
 
