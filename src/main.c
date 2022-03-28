@@ -1,7 +1,8 @@
 // TODO:
 //  - rename this to whichever name I decide to land on (don't forget to do a quick ':%s/init/whatever/g')
-//  - support booting the system diskless (cf. /etc/rc.initdiskless)
+//  - support booting the system diskless (cf. '/etc/rc.initdiskless')
 //  - support booting within a jail (cf. nojail & nojailvnet keywords)
+//  - perhaps a hashmap system for resolving dependencies in a better time complexity (similar to what rcorder(8) does on NetBSD)
 
 #include <stdbool.h>
 #include <string.h>
@@ -45,22 +46,133 @@ static bool verbose = false;
 #define INIT_ROOT "conf/init/"
 #define MOD_DIR INIT_ROOT "mods/"
 
+typedef enum {
+	SERVICE_KIND_GENERIC,
+	SERVICE_KIND_RESEARCH, // for research Unix-style runcom scripts
+	SERVICE_KIND_AQUABSD,
+} service_kind_t;
+
 typedef struct {
+} service_research_t;
+
+typedef struct {
+} service_aquabsd_t;
+
+typedef struct {
+	service_kind_t kind;
+
 	char* name;
+	char* path;
 
 	size_t deps_len;
+
+	char** dep_names;
 	service_t** deps;
+
+	// kind-specific members
+
+	union {
+		service_research_t research;
+		service_aquabsd_t aquabsd;
+	}
 } service_t;
 
 static service_t* new_service(const char* name) {
 	service_t* service = calloc(1, sizeof *service);
+
+	service->kind = SERVICE_KIND_GENERIC;
 	service->name = strdup(name);
 
 	return service;
 }
 
-static void fill_search_service(service_t* service) {
-	// TODO read the service script, similar to what rcorder(8) does on NetBSD
+static int fill_search_service(service_t* service) {
+	// yeah, this function really isn't pretty, but I'd rather make is as compact as possible with ugly macros as I don't really want this to be the focus of this source file
+
+	service->kind = SERVICE_KIND_RESEARCH;
+
+	// read the service script, similar to what rcorder(8) does on NetBSD
+	// a lot of this code is actually even stolen from NetBSD's 'sbin/rcorder/rcorder.c'
+
+	service->path = asprintf(NULL, "/etc/rc.d/%s", service->name);
+
+	FILE* fp = fopen(service->path, "r");
+
+	if (!fp) {
+		return -1;
+	}
+
+	const char DELIMS[] = { '\\', '\\', '\0' };
+	char* buf;
+
+	// now that's what I call a BIG GRAYSON
+	// TODO little note, and probably something to fix in both FreeBSD & NetBSD, the 'REQUIRES', 'PROVIDES', & 'KEYWORDS' directives are useless (it's pretty obvious how when looking at the code)
+
+	char* require = NULL;
+	char* provide = NULL;
+	char* before  = NULL;
+	char* keyword = NULL;
+
+	for (
+		enum { BEFORE_PARSING, PARSING, PARSING_DONE } state = BEFORE_PARSING;
+		state != PARSING_DONE && (buf = fparseln(fp, NULL, NULL, DELIMS, 0));
+		free(buf)
+	) {
+		#define DIRECTIVE(lower, upper) \
+			else if (strncmp("# " #upper ":", buf, sizeof(#upper) - 1) == 0) { \
+				lower = strdup(buf + sizeof(#upper) - 1); \
+			}
+
+		if (0) {}
+
+		DIRECTIVE(require, REQUIRE)
+		DIRECTIVE(provide, PROVIDE)
+		DIRECTIVE(before,  BEFORE )
+		DIRECTIVE(keyword, KEYWORD)
+
+		else {
+			if (state == PARSING) {
+				state = PARSING_DONE;
+			}
+
+			continue;
+		}
+
+		#undef DIRECTIVE
+
+		state = PARSING;
+	}
+
+	// parse 'require' as service dependency names
+
+	char* str;
+
+	while ((str = strsep(require, " \t\n"))) {
+		if (!*str) {
+			continue;
+		}
+
+		service->dep_names = realloc(service->dep_names, ++service->deps_len * sizeof *service->dep_names);
+		service->dep_names[service->deps_len - 1] = strdup(str);
+	}
+
+	// free everything
+
+	fclose(fp);
+
+	#define FREE(thing) \
+		if ((thing)) { \
+			free((thing)); \
+		}
+
+	FREE(require)
+	FREE(provide)
+	FREE(before )
+	FREE(keyword)
+
+	#undef FREE
+
+	return 0;
 }
 
 static void del_service(service_t* service) {
@@ -68,10 +180,15 @@ static void del_service(service_t* service) {
 		return;
 	}
 
-	if (service->name) {
-		free(service->name);
-	}
+	#define FREE(thing) \
+		if ((thing)) { \
+			free((thing)); \
+		}
 
+	FREE(service->name)
+	FREE(service->path)
+
+	#undef FREE
 	free(service);
 }
 
@@ -208,6 +325,10 @@ int main(int argc, char* argv[]) {
 
 		fill_research_service(service);
 	}
+
+	// resolve service dependencies
+
+
 
 	// free services
 
