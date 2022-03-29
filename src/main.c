@@ -10,11 +10,11 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <threads.h>
 #include <unistd.h>
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -97,8 +97,11 @@ struct service_t {
 	bool disable_in_vnet_jail;
 
 	// actual service stuff
+	// unfortunately, the C11 standard doesn't seem to support condition values/mutices, which basically makes it useless
+	// TODO the above comment *seems* to be false? Documentation is lacking, but I might aswell switch back to C11 threads if I can
 
-	thrd_t thread;
+	bool thread_created;
+	pthread_t thread;
 	pid_t pid;
 
 	// kind-specific members
@@ -312,28 +315,34 @@ static inline int __wait_for_process(pid_t pid) {
 	return 0;
 }
 
-static int service_thread(void* _service) {
+static void* service_thread(void* _service) {
 	service_t* service = _service;
+
+	printf("STARTING %s\n", service->name);
 
 	// wait for dependencies to finish
 
 	for (size_t i = 0; i < service->deps_len; i++) {
 		service_t* dep = service->deps[i];
 
-		int dep_rv = 0;
-		thrd_join(dep->thread, &dep_rv);
+		printf("%s waiting for %s\n", service->name, dep->name);
 
-		if (dep_rv) {
-			return dep_rv;
-		}
+		// void* dep_rv = NULL;
+		// pthread_join(dep->thread, &dep_rv);
+
+		// if (dep_rv) {
+		// 	return dep_rv;
+		// }
 	}
+
+	return NULL;
 
 	// create new process for service in question
 
 	service->pid = fork();
 
 	if (!service->pid) {
-		//execlp(service->path, service->path /* TODO extra arguments? */);
+		//execlp(service->path, service->path /* TODO extra arguments for like telling if we're start/stop/resume/&c'ing ? */);
 		FATAL_ERROR("Failed to run %s service at '%s'\n", service->name, service->path)
 	}
 
@@ -345,7 +354,32 @@ static int service_thread(void* _service) {
 		WARN("Something went wrong running the %s service at '%s'\n", service->name, service->path)
 	}
 
-	return rv;
+	return (void*) (uint64_t) rv;
+}
+
+static void start_on_start_services(size_t services_len, service_t** services) {
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
+
+		if (!service) {
+			continue;
+		}
+
+		if (!service->on_start || service->first_boot) {
+			continue;
+		}
+
+		// go as far down the tree as we can before starting services
+		// this is so that we can join the threads of dependencies in 'service_thread' while waiting for them
+
+		start_on_start_services(service->deps_len, service->deps);
+
+		if (!service->thread_created) {
+			printf("Create %s %d\n", service->name, service->thread_created);
+			service->thread_created = true;
+			pthread_create(&service->thread, NULL, service_thread, service);
+		}
+	}
 }
 
 static bool research_service_provides(service_t* service, const char* name) {
@@ -467,9 +501,9 @@ int main(int argc, char* argv[]) {
 
 	// set group ownership to the $SERVICE_GROUP group
 
-	if (fchown(mq, uid /* most likely gonna be root */, service_gid) < 0) {
-		FATAL_ERROR("fchown: %s\n", strerror(errno))
-	}
+	// if (fchown(mq, uid /* most likely gonna be root */, service_gid) < 0) {
+	// 	FATAL_ERROR("fchown: %s\n", strerror(errno))
+	// }
 
 	// actually start launching processes
 
@@ -558,15 +592,10 @@ int main(int argc, char* argv[]) {
 
 	// launch each service we need on startup ('service_t.on_start == true')
 
-	for (size_t i = 0; i < services_len; i++) {
-		service_t* service = services[i];
+	start_on_start_services(services_len, services);
 
-		if (!service->on_start || service->first_boot) {
-			continue;
-		}
-
-		thrd_create(&service->thread, service_thread, service);
-	}
+	sleep(1);
+	exit(1);
 
 	// setup message queue notification signal
 	// thanks @qookie 😄
@@ -595,7 +624,7 @@ int main(int argc, char* argv[]) {
 		// read message data & process it
 
 		char buf[256]; // TODO this will end up being some kind of command strutcure
-		__attribute__((unused)) int priority; // we don't care about priority
+		__attribute__((unused)) unsigned priority; // we don't care about priority
 
 	retry: {} // fight me, this is more readable than a loop
 
