@@ -1,13 +1,15 @@
 // TODO:
 //  - rename this to whichever name I decide to land on (don't forget to do a quick ':%s/init/whatever/g')
 //  - support booting the system diskless (cf. '/etc/rc.initdiskless')
-//  - support booting within a jail (cf. nojail & nojailvnet keywords)
+//  - support booting within a jail (cf. 'service_t.disable_in_jail' & 'service_t.disable_in_vnet_jail')
 //  - perhaps a hashmap system for resolving dependencies in a better time complexity (similar to what rcorder(8) does on NetBSD)
+//  - record timing, which can I guess either be written to a log at some point or queried with some command
 
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <threads.h>
 #include <unistd.h>
 
 #include <grp.h>
@@ -83,6 +85,11 @@ typedef struct {
 
 	bool disable_in_jail;
 	bool disable_in_vnet_jail;
+
+	// actual service stuff
+
+	thrd_t thread;
+	pid_t pid;
 
 	// kind-specific members
 
@@ -243,6 +250,10 @@ static int fill_research_service(service_t* service) {
 	return 0;
 }
 
+static void start_service(service_t* service) {
+
+}
+
 static void del_service(service_t* service) {
 	if (!service) {
 		return;
@@ -276,6 +287,59 @@ static void del_service(service_t* service) {
 
 	#undef FREE
 	free(service);
+}
+
+static inline int __wait_for_process(pid_t pid) {
+	// TODO this is really a function that seems like it should be native to aquaBSD
+
+	int status = 0;
+	while (waitpid(service->pid, &status, 0) > 0);
+
+	if (WIFSIGNALED(status)) {
+		return -1;
+	}
+
+	if (WIFEXITED(status)) {
+		return WEXITSTATUS(status);
+	}
+
+	return 0;
+}
+
+static int service_thread(void* _service) {
+	service_t* service = _service;
+
+	// wait for dependencies to finish
+
+	for (size_t i = 0; i < service->deps_count; i++) {
+		service_t* dep = service->deps[i];
+
+		int dep_rv = 0;
+		thrd_join(dep->thread, &dep_rv);
+
+		if (dep_rv) {
+			return dep_rv;
+		}
+	}
+
+	// create new process for service in question
+
+	service->pid = fork();
+
+	if (!service->pid) {
+		execlp(service->path, service->path /* TODO extra arguments? */);
+		FATAL_ERROR("Failed to run %s service at '%s'\n", service->name, service->path)
+	}
+
+	// wait for process to finish up
+
+	int rv = __wait_for_process(service->pid);
+
+	if (rv < 0) {
+		WARN("Something went wrong running the %s service at '%s'\n", service->name, service->path)
+	}
+
+	return rv;
 }
 
 static bool research_service_provides(service_t* service, const char* name) {
@@ -407,7 +471,7 @@ int main(int argc, char* argv[]) {
 
 	// NOTES (cf. rc.d(8)):
 	//  - autoboot=yes/rc_fast=yes for skipping checks and speeding stuff up
-	//  - skip everything with the 'nostart' keyword if the $firstboot_sentinel file exists (and 'firstboot' if it's the first time the system is booting after installation - this is for services such as 'growfs' for resizing the root filesystem if it wasn't already done by the installer)
+	//  - skip everything with the 'nostart' keyword (and 'firstboot' if it's the first time the system is booting after installation - this is for services such as 'growfs' for resizing the root filesystem if it wasn't already done by the installer)
 	//  - execute services until $early_late_divider is reached ('early_late_divider=FILESYSTEMS', ensure root & "critical" filesystems are mounted basically)
 	//  - check the firstboot again (incase we've moved to a different fs)
 	//  - delete $firstboot_sentinel (& $firstboot_sentinel"-reboot" if that exists, in which case reboot)
@@ -485,11 +549,11 @@ int main(int argc, char* argv[]) {
 	for (size_t i = 0; i < services_len; i++) {
 		service_t* service = services[i];
 
-		if (!service->on_start) {
+		if (!service->on_start || service->first_boot) {
 			continue;
 		}
 
-		service_start(service);
+		thrd_create(&service->thread, service_thread, service);
 	}
 
 	// setup message queue notification signal
