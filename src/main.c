@@ -73,6 +73,14 @@ typedef struct {
 
 	bool check_circular_passed;
 
+	// service flags (these are what NetBSD would call "keywords")
+	// TODO equivalents to 'nojail' & 'nojailvnet' on FreeBSD
+
+	bool on_start;
+	bool on_stop;
+	bool disable_in_jail;
+	bool disable_in_vnet_jail;
+
 	// kind-specific members
 
 	union {
@@ -86,6 +94,13 @@ static service_t* new_service(const char* name) {
 
 	service->kind = SERVICE_KIND_GENERIC;
 	service->name = strdup(name);
+
+	// set defaults for service flags
+
+	service->on_start = true;
+	service->on_stop  = false;
+	service->disable_in_jail = false;
+	service->disable_in_vnet_jail = false;
 
 	return service;
 }
@@ -168,6 +183,33 @@ static int fill_research_service(service_t* service) {
 
 		service->research.provides = realloc(service->research.provides, ++service->research.provides_len * sizeof *service->research.provides);
 		service->research.provides[service->research.provides_len - 1] = strdup(str);
+	}
+
+	// parse 'keyword' as service flags
+	// default were already set when creating the service object
+
+	while ((str = strsep(keyword, " \t\n"))) {
+		if (!*str) {
+			continue;
+		}
+
+		#define KEYWORD(keyword, member, val) \
+			else if (strcmp(str, (keyword)) == 0) { \
+				service->member = (val); \
+			}
+
+		if (0) {}
+
+		KEYWORD("nostart", on_start, false)
+		KEYWORD("shutdown", on_stop, true)
+		KEYWORD("nojail", disable_in_jail, true)
+		KEYWORD("nojailvnet", disable_in_vnet_jail, true)
+
+		else {
+			WARN("Unkown research Unix-style service keyword '%s'\n", str)
+		}
+
+		#undef KEYWORD
 	}
 
 	// free everything
