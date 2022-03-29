@@ -389,16 +389,6 @@ int main(int argc, char* argv[]) {
 		FATAL_ERROR("fchown: %s\n", strerror(errno))
 	}
 
-	// setup message queue notification signal
-	// thanks @qookie 😄
-
-	sigset_t set;
-
-	sigemptyset(&set);
-	sigaddset(&set, SIGUSR1);
-
-	sigprocmask(SIG_BLOCK, &set, NULL);
-
 	// actually start launching processes
 
 	LOG("aquaBSD init\n")
@@ -476,6 +466,79 @@ int main(int argc, char* argv[]) {
 		if (check_circular(service)) {
 			FATAL_ERROR("Found circular dependency")
 		}
+	}
+
+	// launch each service we need on startup ('service_t.on_start == true')
+
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
+
+		if (!service->on_start) {
+			continue;
+		}
+
+		service_start(service);
+	}
+
+	// setup message queue notification signal
+	// thanks @qookie 😄
+
+	sigset_t set;
+
+	sigemptyset(&set);
+	sigaddset(&set, SIGUSR1);
+
+	sigprocmask(SIG_BLOCK, &set, NULL);
+
+	// block while waiting for messages on the message queue
+
+	while (1) {
+		siginfo_t info;
+		sigwaitinfo(&set, &info, NULL);
+
+		// received a message, run a bunch of sanity checks on it
+
+		if (info.si_mqd != mq) {
+			continue;
+		}
+
+		uid_t uid = info.si_uid;
+
+		// read message data & process it
+
+		uint8_t buf[256]; // TODO this will end up being some kind of command strutcure
+		__attribute__((unused)) int priority; // we don't care about priority
+
+	retry: // fight me, this is more readable than a loop
+
+		ssize_t len = mq_receive(mq, buf, sizeof buf, &priority);
+
+		if (errno == EAGAIN) {
+			goto retry;
+		}
+
+		if (errno == ETIMEDOUT) {
+			WARN("Receiving on the message queue timed out")
+			continue;
+		}
+
+		if (len < 0) {
+			WARN("mq_receive: %s", strerror(errno));
+		}
+
+		// TODO process command somehow
+	}
+
+	// launch each service we need on shutdown ('service_t.on_stop == true')
+
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
+
+		if (!service->on_stop) {
+			continue;
+		}
+
+		service_start(service);
 	}
 
 	// free services
