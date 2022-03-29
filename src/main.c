@@ -5,6 +5,7 @@
 //  - perhaps a hashmap system for resolving dependencies in a better time complexity (similar to what rcorder(8) does on NetBSD)
 //  - record timing, which can I guess either be written to a log at some point or queried with some command
 
+#include <errno.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
@@ -12,8 +13,15 @@
 #include <threads.h>
 #include <unistd.h>
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+
 #include <grp.h>
 #include <mqueue.h>
+#include <libutil.h>
 
 #define LOG_SIGNATURE "[init]"
 
@@ -62,7 +70,9 @@ typedef struct {
 typedef struct {
 } service_aquabsd_t;
 
-typedef struct {
+typedef struct service_t service_t;
+
+struct service_t {
 	service_kind_t kind;
 
 	char* name;
@@ -96,8 +106,8 @@ typedef struct {
 	union {
 		service_research_t research;
 		service_aquabsd_t aquabsd;
-	}
-} service_t;
+	};
+};
 
 static service_t* new_service(const char* name) {
 	service_t* service = calloc(1, sizeof *service);
@@ -128,8 +138,6 @@ static int fill_research_service(service_t* service) {
 	// read the service script, similar to what rcorder(8) does on NetBSD
 	// a lot of this code is actually even stolen from NetBSD's 'sbin/rcorder/rcorder.c'
 
-	service->path = asprintf(NULL, "/etc/rc.d/%s", service->name);
-
 	FILE* fp = fopen(service->path, "r");
 
 	if (!fp) {
@@ -146,14 +154,16 @@ static int fill_research_service(service_t* service) {
 	char* before  = NULL;
 	char* keyword = NULL;
 
+	enum { BEFORE_PARSING, PARSING, PARSING_DONE } state;
+
 	for (
-		enum { BEFORE_PARSING, PARSING, PARSING_DONE } state = BEFORE_PARSING;
+		state = BEFORE_PARSING;
 		state != PARSING_DONE && (buf = fparseln(fp, NULL, NULL, "\\\\", 0));
 		free(buf)
 	) {
 		#define DIRECTIVE(lower, upper) \
 			else if (strncmp("# " #upper ":", buf, sizeof(#upper) - 1) == 0) { \
-				lower = strdup(buf + sizeof(#upper) - 1); \
+				lower = strdup(buf + sizeof(#upper) + 3); \
 			}
 
 		if (0) {}
@@ -180,7 +190,7 @@ static int fill_research_service(service_t* service) {
 
 	char* str;
 
-	while ((str = strsep(require, " \t\n"))) {
+	while ((str = strsep(&require, " \t\n"))) {
 		if (!*str) {
 			continue;
 		}
@@ -191,7 +201,7 @@ static int fill_research_service(service_t* service) {
 
 	// parse 'provide' as, well, provide
 
-	while ((str = strsep(provide, " \t\n"))) {
+	while ((str = strsep(&provide, " \t\n"))) {
 		if (!*str) {
 			continue;
 		}
@@ -203,7 +213,7 @@ static int fill_research_service(service_t* service) {
 	// parse 'keyword' as service flags
 	// default were already set when creating the service object
 
-	while ((str = strsep(keyword, " \t\n"))) {
+	while ((str = strsep(&keyword, " \t\n"))) {
 		if (!*str) {
 			continue;
 		}
@@ -225,7 +235,7 @@ static int fill_research_service(service_t* service) {
 		KEYWORD("nojailvnet", disable_in_vnet_jail, true )
 
 		else {
-			WARN("Unkown research Unix-style service keyword '%s'\n", str)
+			WARN("Unknown research Unix-style service keyword '%s'\n", str)
 		}
 
 		#undef KEYWORD
@@ -248,10 +258,6 @@ static int fill_research_service(service_t* service) {
 	#undef FREE
 
 	return 0;
-}
-
-static void start_service(service_t* service) {
-
 }
 
 static void del_service(service_t* service) {
@@ -293,7 +299,7 @@ static inline int __wait_for_process(pid_t pid) {
 	// TODO this is really a function that seems like it should be native to aquaBSD
 
 	int status = 0;
-	while (waitpid(service->pid, &status, 0) > 0);
+	while (waitpid(pid, &status, 0) > 0);
 
 	if (WIFSIGNALED(status)) {
 		return -1;
@@ -311,7 +317,7 @@ static int service_thread(void* _service) {
 
 	// wait for dependencies to finish
 
-	for (size_t i = 0; i < service->deps_count; i++) {
+	for (size_t i = 0; i < service->deps_len; i++) {
 		service_t* dep = service->deps[i];
 
 		int dep_rv = 0;
@@ -327,7 +333,7 @@ static int service_thread(void* _service) {
 	service->pid = fork();
 
 	if (!service->pid) {
-		execlp(service->path, service->path /* TODO extra arguments? */);
+		//execlp(service->path, service->path /* TODO extra arguments? */);
 		FATAL_ERROR("Failed to run %s service at '%s'\n", service->name, service->path)
 	}
 
@@ -498,21 +504,27 @@ int main(int argc, char* argv[]) {
 			continue; // don't care about '.', '..', & other entries starting with a dot
 		}
 
+		char* path;
+		asprintf(&path, "/etc/rc.d/%s", entry->d_name);
+
 		struct stat sb;
 
-		if (stat(entry->d_name, &sb) < 0) {
-			FATAL_ERROR("stat(\"%s\"): %s\n", entry->d_name, strerror(errno))
+		if (stat(path, &sb) < 0) {
+			free(path);
+			FATAL_ERROR("stat(\"%s\"): %s\n", path, strerror(errno))
 		}
 
 		mode_t permissions = sb.st_flags & 0777;
 
 		if (permissions == 0555) {
+			free(path);
 			FATAL_ERROR("\"%s\" doesn't have the right permissions ('0%o', needs '0555')\n", entry->d_name, permissions)
 		}
 
 		// okay! add the service
 
 		service_t* service = new_service(entry->d_name);
+		service->path = path;
 
 		services = realloc(services, ++services_len * sizeof *services);
 		services[services_len - 1] = service;
@@ -570,7 +582,7 @@ int main(int argc, char* argv[]) {
 
 	while (1) {
 		siginfo_t info;
-		sigwaitinfo(&set, &info, NULL);
+		sigwaitinfo(&set, &info);
 
 		// received a message, run a bunch of sanity checks on it
 
@@ -582,10 +594,10 @@ int main(int argc, char* argv[]) {
 
 		// read message data & process it
 
-		uint8_t buf[256]; // TODO this will end up being some kind of command strutcure
+		char buf[256]; // TODO this will end up being some kind of command strutcure
 		__attribute__((unused)) int priority; // we don't care about priority
 
-	retry: // fight me, this is more readable than a loop
+	retry: {} // fight me, this is more readable than a loop
 
 		ssize_t len = mq_receive(mq, buf, sizeof buf, &priority);
 
@@ -614,7 +626,7 @@ int main(int argc, char* argv[]) {
 			continue;
 		}
 
-		service_start(service);
+		// TODO start threads and whatever
 	}
 
 	// free services
