@@ -102,6 +102,7 @@ struct service_t {
 
 	bool thread_created;
 	pthread_t thread;
+	pthread_mutex_t mutex;
 	pid_t pid;
 
 	// kind-specific members
@@ -300,6 +301,7 @@ static void del_service(service_t* service) {
 
 static inline int __wait_for_process(pid_t pid) {
 	// TODO this is really a function that seems like it should be native to aquaBSD
+	//      also, using a spinlock is probably not the best of ideas either
 
 	int status = 0;
 	while (waitpid(pid, &status, 0) > 0);
@@ -318,41 +320,49 @@ static inline int __wait_for_process(pid_t pid) {
 static void* service_thread(void* _service) {
 	service_t* service = _service;
 
-	printf("STARTING %s\n", service->name);
+	// TODO what if a dependant process somehow manages to lock the mutex before us?
+
+	pthread_mutex_lock(&service->mutex);
+
+	printf("== \033[0;34mWAITING\033[0m %s\n", service->name);
 
 	// wait for dependencies to finish
 
 	for (size_t i = 0; i < service->deps_len; i++) {
 		service_t* dep = service->deps[i];
 
-		printf("%s waiting for %s\n", service->name, dep->name);
+		// wait for mutex to be unlocked by attempting to lock it and then instantly unlocking it
 
-		// void* dep_rv = NULL;
-		// pthread_join(dep->thread, &dep_rv);
+		if (!dep->mutex) {
+			continue;
+		}
 
-		// if (dep_rv) {
-		// 	return dep_rv;
-		// }
+		pthread_mutex_lock(&dep->mutex);
+		pthread_mutex_unlock(&dep->mutex);
 	}
 
-	return NULL;
-
 	// create new process for service in question
+
+	printf("== \033[0;34mSTARTING\033[0m %s\n", service->name);
+	usleep(rand() % 1000000);
 
 	service->pid = fork();
 
 	if (!service->pid) {
 		//execlp(service->path, service->path /* TODO extra arguments for like telling if we're start/stop/resume/&c'ing ? */);
-		FATAL_ERROR("Failed to run %s service at '%s'\n", service->name, service->path)
+		_exit(EXIT_FAILURE);
 	}
 
 	// wait for process to finish up
 
 	int rv = __wait_for_process(service->pid);
 
-	if (rv < 0) {
+	if (rv) {
 		WARN("Something went wrong running the %s service at '%s'\n", service->name, service->path)
 	}
+
+	pthread_mutex_unlock(&service->mutex);
+	printf("== \033[0;35mFINISHED\033[0m %s\n", service->name);
 
 	return (void*) (uint64_t) rv;
 }
@@ -375,9 +385,12 @@ static void start_on_start_services(size_t services_len, service_t** services) {
 		start_on_start_services(service->deps_len, service->deps);
 
 		if (!service->thread_created) {
-			printf("Create %s %d\n", service->name, service->thread_created);
 			service->thread_created = true;
+
+			pthread_mutex_init(&service->mutex, NULL);
+
 			pthread_create(&service->thread, NULL, service_thread, service);
+			printf("== CREATED THREAD %s (%p)\n", service->name, service->thread);
 		}
 	}
 }
@@ -594,7 +607,7 @@ int main(int argc, char* argv[]) {
 
 	start_on_start_services(services_len, services);
 
-	sleep(1);
+	sleep(10);
 	exit(1);
 
 	// setup message queue notification signal
