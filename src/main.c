@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <dirent.h>
@@ -406,6 +407,24 @@ static void start_on_start_services(size_t services_len, service_t** services) {
 	}
 }
 
+static void join_services(size_t services_len, service_t** services) {
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
+
+		if (!service) {
+			continue;
+		}
+
+		if (!service->thread_created) {
+			continue;
+		}
+
+
+		__attribute__((unused)) void* rv = NULL;
+		pthread_join(service->thread, &rv);
+	}
+}
+
 static bool research_service_provides(service_t* service, const char* name) {
 	if (service->kind != SERVICE_KIND_RESEARCH) {
 		return false;
@@ -472,7 +491,7 @@ int main(int argc, char* argv[]) {
 		}
 
 		else {
-			FATAL_ERROR("Unknown option (%s)\n", option)
+			WARN("Unknown option (%s)\n", option)
 		}
 	}
 
@@ -618,8 +637,10 @@ int main(int argc, char* argv[]) {
 
 	start_on_start_services(services_len, services);
 
-	sleep(10);
-	exit(1);
+	// join all services to exit out of init
+
+	join_services(services_len, services);
+	exit(0);
 
 	// setup message queue notification signal
 	// thanks @qookie 😄
