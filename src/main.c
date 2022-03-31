@@ -348,12 +348,19 @@ static void* service_thread(void* _service) {
 	service->pid = fork();
 
 	if (!service->pid) {
-		// we don't care about freeing this
+		if (service->kind == SERVICE_KIND_RESEARCH) {
+			// we don't care about freeing this
 
-		char* call;
-		asprintf(&call, ". /etc/rc.subr && run_rc_script %s faststart", service->path);
+			char* call;
+			asprintf(&call, ". /etc/rc.subr && run_rc_script %s faststart", service->path);
 
-		execlp("sh", "sh", "-c", call, NULL);
+			execlp("sh", "sh", "-c", call, NULL);
+		}
+
+		else {
+			// TODO
+		}
+
 		_exit(EXIT_FAILURE);
 	}
 
