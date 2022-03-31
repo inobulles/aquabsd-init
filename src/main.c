@@ -344,6 +344,10 @@ static void* service_thread(void* _service) {
 	for (size_t i = 0; i < service->deps_len; i++) {
 		service_t* dep = service->deps[i];
 
+		if (!dep) {
+			continue;
+		}
+
 		// wait for mutex to be unlocked by attempting to lock it and then instantly unlocking it
 
 		if (!dep->mutex) {
@@ -480,6 +484,13 @@ static service_t* search_services(size_t services_len, service_t** services, con
 }
 
 static bool check_circular(service_t* service) {
+	// returns true if circular dependencies found
+	// returns false otherwise
+
+	if (!service) {
+		return false;
+	}
+
 	if (service->check_circular_passed) {
 		return true;
 	}
