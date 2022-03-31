@@ -344,12 +344,16 @@ static void* service_thread(void* _service) {
 	// create new process for service in question
 
 	printf("== \033[0;34mSTARTING\033[0m %s\n", service->name);
-	usleep(rand() % 1000000);
 
 	service->pid = fork();
 
 	if (!service->pid) {
-		//execlp(service->path, service->path /* TODO extra arguments for like telling if we're start/stop/resume/&c'ing ? */);
+		// we don't care about freeing this
+
+		char* call;
+		asprintf(&call, ". /etc/rc.subr && run_rc_script %s faststart", service->path);
+
+		execlp("sh", "sh", "-c", call, NULL);
 		_exit(EXIT_FAILURE);
 	}
 
