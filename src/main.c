@@ -106,6 +106,11 @@ struct service_t {
 	pthread_mutex_t mutex;
 	pid_t pid;
 
+	// timing stuff
+
+	long double start_time;
+	long double total_time;
+
 	// kind-specific members
 
 	union {
@@ -113,6 +118,13 @@ struct service_t {
 		service_aquabsd_t aquabsd;
 	};
 };
+
+static inline long double __get_time(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	return (long double) now.tv_sec + 1.e-9 * (long double) now.tv_nsec;
+}
 
 static service_t* new_service(const char* name) {
 	service_t* service = calloc(1, sizeof *service);
@@ -342,9 +354,12 @@ static void* service_thread(void* _service) {
 		pthread_mutex_unlock(&dep->mutex);
 	}
 
-	// create new process for service in question
+	// record start time
 
 	printf("== \033[0;34mSTARTING\033[0m %s\n", service->name);
+	service->start_time = __get_time();
+
+	// create new process for service in question
 
 	service->pid = fork();
 
@@ -375,6 +390,11 @@ static void* service_thread(void* _service) {
 
 	pthread_mutex_unlock(&service->mutex);
 	printf("== \033[0;35mFINISHED\033[0m %s\n", service->name);
+
+	// compute total time service took
+
+	long double now = __get_time();
+	service->total_time = now - service->start_time;
 
 	return (void*) (uint64_t) rv;
 }
@@ -610,7 +630,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	// resolve service dependencies (this is where we build the dependency graph)
-	// yeah, this code has a pretty horrid time complexity  O(n^2)), can absolutely do better (O(n) ideally assuming no hashmap collisions)
+	// yeah, this code has a pretty horrid time complexity  O(n^2), can absolutely do better (O(n) ideally assuming no hashmap collisions)
 
 	for (size_t i = 0; i < services_len; i++) {
 		service_t* service = services[i];
@@ -635,11 +655,38 @@ int main(int argc, char* argv[]) {
 
 	// launch each service we need on startup ('service_t.on_start == true')
 
+	long double start_time = __get_time();
 	start_on_start_services(services_len, services);
 
 	// join all services to exit out of init
 
 	join_services(services_len, services);
+
+	// print out timing information and exit
+
+	long double now = __get_time();
+	printf("== AQUABSD INIT TOOK %Lf SECONDS ==\n", now - start_time);
+
+	char* longest_name = "unknown";
+	long double longest_time = 0.0;
+
+	for (size_t i = 0; i < services_len; i++) {
+		service_t* service = services[i];
+
+		if (!service) {
+			continue;
+		}
+
+		if (service->total_time < longest_time) {
+			continue;
+		}
+
+		longest_name = service->name;
+		longest_time = service->total_time;
+	}
+
+	printf("(longest %s at %Lf seconds)\n", longest_name, longest_time);
+
 	exit(0);
 
 	// setup message queue notification signal
