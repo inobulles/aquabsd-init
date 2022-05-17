@@ -409,7 +409,7 @@ static void* service_thread(void* _service) {
 
 	pthread_mutex_lock(&service->mutex);
 
-	printf("[\033[0;34mWAITING\033[0m ] %s\n", service->name);
+	// printf("[\033[0;34mWAITING\033[0m ] %s\n", service->name);
 
 	// wait for dependencies to finish
 
@@ -491,19 +491,21 @@ static void start_on_start_services(size_t services_len, service_t** services) {
 			continue;
 		}
 
-		// go as far down the tree as we can before starting services
+		if (service->thread_created) {
+			continue;
+		}
+
+		service->thread_created = true;
+
+		// go as far down the tree as we can before actually starting services
 		// this is so that we can join the threads of dependencies in 'service_thread' while waiting for them
 
 		start_on_start_services(service->deps_len, service->deps);
 
-		if (!service->thread_created) {
-			service->thread_created = true;
+		pthread_mutex_init(&service->mutex, NULL);
+		pthread_create(&service->thread, NULL, service_thread, service);
 
-			pthread_mutex_init(&service->mutex, NULL);
-
-			pthread_create(&service->thread, NULL, service_thread, service);
-			printf("[THRCREAT] %s (%p)\n", service->name, service->thread);
-		}
+		// printf("[THRCREAT] %s (%p)\n", service->name, service->thread);
 	}
 }
 
@@ -657,15 +659,50 @@ int main(int argc, char* argv[]) {
 	size_t services_len = 0;
 	service_t** services = NULL;
 
+	// read all the aquaBSD services in '/etc/init/services'
+
+	DIR* dp = opendir("/etc/init/services");
+
+	if (!dp) {
+		FATAL_ERROR("opendir(\"/etc/init/services\"): %s\n", strerror(errno))
+	}
+
+	struct dirent* ent;
+
+	while ((ent = readdir(dp))) {
+		if (ent->d_type != DT_REG) {
+			continue; // anything other than a regular file is invalid
+		}
+
+		if (*ent->d_name == '.') {
+			continue; // don't care about '.', '..', & other entries starting with a dot
+		}
+
+		char* path;
+		asprintf(&path, "/etc/init/services/%s", ent->d_name);
+
+		// okay! add the service
+
+		service_t* service = new_service(ent->d_name);
+		service->path = path;
+
+		if (fill_aquabsd_service(service) < 0) {
+			continue;
+		}
+
+		services = realloc(services, ++services_len * sizeof *services);
+		services[services_len - 1] = service;
+	}
+
+	closedir(dp);
+
 	// read all the legacy research Unix-style services in '/etc/rc.d'
 
-	DIR* dp = opendir("/etc/rc.d");
+	/* DIR* */ dp = opendir("/etc/rc.d");
 
 	if (!dp) {
 		FATAL_ERROR("opendir(\"/etc/rc.d\"): %s\n", strerror(errno))
 	}
-
-	struct dirent* ent;
 
 	while ((ent = readdir(dp))) {
 		if (ent->d_type != DT_REG) {
@@ -699,41 +736,6 @@ int main(int argc, char* argv[]) {
 		service->path = path;
 
 		if (fill_research_service(service) < 0) {
-			continue;
-		}
-
-		services = realloc(services, ++services_len * sizeof *services);
-		services[services_len - 1] = service;
-	}
-
-	closedir(dp);
-
-	// read all the aquaBSD services in '/etc/init/services'
-
-	/* DIR* */ dp = opendir("/etc/init/services");
-
-	if (!dp) {
-		FATAL_ERROR("opendir(\"/etc/init/services\"): %s\n", strerror(errno))
-	}
-
-	while ((ent = readdir(dp))) {
-		if (ent->d_type != DT_REG) {
-			continue; // anything other than a regular file is invalid
-		}
-
-		if (*ent->d_name == '.') {
-			continue; // don't care about '.', '..', & other entries starting with a dot
-		}
-
-		char* path;
-		asprintf(&path, "/etc/init/services/%s", ent->d_name);
-
-		// okay! add the service
-
-		service_t* service = new_service(ent->d_name);
-		service->path = path;
-
-		if (fill_aquabsd_service(service) < 0) {
 			continue;
 		}
 
