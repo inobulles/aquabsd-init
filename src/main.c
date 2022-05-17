@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -68,7 +69,11 @@ typedef struct {
 	char** provides;
 } service_research_t;
 
+typedef int (*aquabsd_start_func_t) (void);
+
 typedef struct {
+	void* lib;
+	aquabsd_start_func_t start;
 } service_aquabsd_t;
 
 typedef struct service_t service_t;
@@ -277,6 +282,69 @@ static int fill_research_service(service_t* service) {
 	return 0;
 }
 
+typedef size_t (*get_deps_len_func_t)  (void);
+typedef char** (*get_dep_names_func_t) (void);
+
+static int fill_aquabsd_service(service_t* service) {
+	service->kind = SERVICE_KIND_AQUABSD;
+
+	// we're using 'RTLD_NOW' here instead of 'RTLD_LAZY' as would normally be preferred
+	// since we only have a small number of functions that we know we'll eventually use, it's better to resolve all external symbols straight away
+
+	service->aquabsd.lib = dlopen(service->path, RTLD_NOW);
+
+	if (!service->aquabsd.lib) {
+		WARN("dlopen: failed to load %s: %s\n", service->path, dlerror())
+		return -1;
+	}
+
+	dlerror(); // clear last error
+
+	// get start function, duh
+
+	service->aquabsd.start = dlsym(service->aquabsd.lib, "start");
+
+	if (!service->aquabsd.start) {
+		WARN("aquaBSD services must have start symbol\n")
+
+		dlclose(service->aquabsd.lib);
+		return -1;
+	}
+
+	// get dependencies
+
+	get_deps_len_func_t  get_deps_len  = dlsym(service->aquabsd.lib, "get_deps_len" );
+	get_dep_names_func_t get_dep_names = dlsym(service->aquabsd.lib, "get_dep_names");
+
+	if (!get_deps_len || !get_dep_names) {
+		WARN("aquaBSD services must have get_deps_len & get_dep_names symbols\n")
+
+		dlclose(service->aquabsd.lib);
+		return -1;
+	}
+
+	service->deps_len  = get_deps_len ();
+	service->dep_names = get_dep_names();
+
+	// get service flags
+
+	#define FLAG(flag) \
+		if (dlsym(service->aquabsd.lib, #flag)) { \
+			service->flag = true; \
+		}
+
+	FLAG(on_start            )
+	FLAG(on_stop             )
+	FLAG(on_resume           )
+
+	FLAG(first_boot          )
+
+	FLAG(disable_in_jail     )
+	FLAG(disable_in_vnet_jail)
+
+	return 0;
+}
+
 static void del_service(service_t* service) {
 	if (!service) {
 		return;
@@ -303,6 +371,10 @@ static void del_service(service_t* service) {
 		if (service->research.provides) {
 			FREE(service->research.provides)
 		}
+	}
+
+	else if (service->kind == SERVICE_KIND_AQUABSD) {
+		dlclose(service->aquabsd.lib);
 	}
 
 	FREE(service->name)
@@ -337,7 +409,7 @@ static void* service_thread(void* _service) {
 
 	pthread_mutex_lock(&service->mutex);
 
-	printf("== \033[0;34mWAITING\033[0m %s\n", service->name);
+	printf("[\033[0;34mWAITING\033[0m ] %s\n", service->name);
 
 	// wait for dependencies to finish
 
@@ -360,7 +432,7 @@ static void* service_thread(void* _service) {
 
 	// record start time
 
-	printf("== \033[0;34mSTARTING\033[0m %s\n", service->name);
+	printf("[\033[0;34mSTARTING\033[0m] %s\n", service->name);
 	service->start_time = __get_time();
 
 	// create new process for service in question
@@ -375,6 +447,10 @@ static void* service_thread(void* _service) {
 			asprintf(&call, ". /etc/rc.subr && run_rc_script %s faststart", service->path);
 
 			execlp("sh", "sh", "-c", call, NULL);
+		}
+
+		else if (service->kind == SERVICE_KIND_AQUABSD) {
+			_exit(service->aquabsd.start());
 		}
 
 		else {
@@ -393,7 +469,7 @@ static void* service_thread(void* _service) {
 	}
 
 	pthread_mutex_unlock(&service->mutex);
-	printf("== \033[0;35mFINISHED\033[0m %s\n", service->name);
+	printf("[\033[0;35mFINISHED\033[0m] %s\n", service->name);
 
 	// compute total time service took
 
@@ -717,6 +793,7 @@ int main(int argc, char* argv[]) {
 		sigwaitinfo(&set, &info);
 
 		// received a message, run a bunch of sanity checks on it
+		// TODO getting some weird warning saying I can't compare info.si_mqd (int) and mq (mqd_t)
 
 		if (info.si_mqd != mq) {
 			continue;
@@ -743,7 +820,7 @@ int main(int argc, char* argv[]) {
 		}
 
 		if (len < 0) {
-			WARN("mq_receive: %s", strerror(errno));
+			WARN("mq_receive: %s", strerror(errno))
 		}
 
 		// TODO process command somehow
