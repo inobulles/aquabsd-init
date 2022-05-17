@@ -11,6 +11,8 @@
 #include <sys/param.h>
 #include <sys/linker.h>
 
+#include "logo.h"
+
 #define flag int
 
 flag on_start;
@@ -104,13 +106,23 @@ int start(void) {
 		return -1;
 	}
 
-	// make screen a solid colour for testing
+	// clear screen
 
-	for (size_t i = 0; i < x_res * y_res * 4; i += 4) {
-		fb[i + 0] = 0xFF;
-		fb[i + 1] = 0x00;
-		fb[i + 2] = 0xFF;
-		fb[i + 3] = 0x00;
+	memset(fb, 0, x_res * y_res * 4);
+
+	// draw logo to screen
+
+	uint32_t dst_pitch = x_res * 4;
+	uint32_t src_pitch = gimp_image.width * 4;
+
+	uint32_t start_x = x_res / 2 - gimp_image.width  / 2;
+	uint32_t start_y = y_res / 2 - gimp_image.height / 2;
+
+	for (size_t i = 0; i < gimp_image.height; i++) {
+		uint8_t* dst_line = fb + dst_pitch * (i + start_y);
+		uint8_t* src_line = (uint8_t*) gimp_image.pixel_data + src_pitch * i;
+
+		memcpy(dst_line + start_x * 4, src_line, src_pitch);
 	}
 
 	return 0;

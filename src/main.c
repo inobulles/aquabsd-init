@@ -446,7 +446,7 @@ static void* service_thread(void* _service) {
 			char* call;
 			asprintf(&call, ". /etc/rc.subr && run_rc_script %s faststart", service->path);
 
-			// execlp("sh", "sh", "-c", call, NULL);
+			execlp("sh", "sh", "-c", call, NULL);
 		}
 
 		else if (service->kind == SERVICE_KIND_AQUABSD) {
