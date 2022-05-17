@@ -446,7 +446,7 @@ static void* service_thread(void* _service) {
 			char* call;
 			asprintf(&call, ". /etc/rc.subr && run_rc_script %s faststart", service->path);
 
-			execlp("sh", "sh", "-c", call, NULL);
+			// execlp("sh", "sh", "-c", call, NULL);
 		}
 
 		else if (service->kind == SERVICE_KIND_AQUABSD) {
@@ -502,7 +502,7 @@ static void start_on_start_services(size_t services_len, service_t** services) {
 			pthread_mutex_init(&service->mutex, NULL);
 
 			pthread_create(&service->thread, NULL, service_thread, service);
-			printf("== CREATED THREAD %s (%p)\n", service->name, service->thread);
+			printf("[THRCREAT] %s (%p)\n", service->name, service->thread);
 		}
 	}
 }
@@ -623,6 +623,8 @@ int main(int argc, char* argv[]) {
 		gid_t gid = gids[group_len];
 		struct group* group = getgrgid(gid); // don't need to free this as per manpage
 
+		printf("%p\n", group);
+
 		if (strcmp(group->gr_name, SERVICE_GROUP) == 0) {
 			service_gid = gid;
 			break;
@@ -677,19 +679,19 @@ int main(int argc, char* argv[]) {
 		FATAL_ERROR("opendir(\"/etc/rc.d\"): %s\n", strerror(errno))
 	}
 
-	struct dirent* entry;
+	struct dirent* ent;
 
-	while ((entry = readdir(dp))) {
-		if (entry->d_type != DT_REG) {
+	while ((ent = readdir(dp))) {
+		if (ent->d_type != DT_REG) {
 			continue; // anything other than a regular file is invalid
 		}
 
-		if (*entry->d_name == '.') {
+		if (*ent->d_name == '.') {
 			continue; // don't care about '.', '..', & other entries starting with a dot
 		}
 
 		char* path;
-		asprintf(&path, "/etc/rc.d/%s", entry->d_name);
+		asprintf(&path, "/etc/rc.d/%s", ent->d_name);
 
 		struct stat sb;
 
@@ -702,12 +704,12 @@ int main(int argc, char* argv[]) {
 
 		if (permissions == 0555) {
 			free(path);
-			FATAL_ERROR("\"%s\" doesn't have the right permissions ('0%o', needs '0555')\n", entry->d_name, permissions)
+			FATAL_ERROR("\"%s\" doesn't have the right permissions ('0%o', needs '0555')\n", ent->d_name, permissions)
 		}
 
 		// okay! add the service
 
-		service_t* service = new_service(entry->d_name);
+		service_t* service = new_service(ent->d_name);
 		service->path = path;
 
 		services = realloc(services, ++services_len * sizeof *services);
@@ -715,6 +717,41 @@ int main(int argc, char* argv[]) {
 
 		fill_research_service(service);
 	}
+
+	closedir(dp);
+
+	// read all the aquaBSD services in '/etc/init/services'
+
+	/* DIR* */ dp = opendir("/etc/init/services");
+
+	if (!dp) {
+		FATAL_ERROR("opendir(\"/etc/init/services\"): %s\n", strerror(errno))
+	}
+
+	while ((ent = readdir(dp))) {
+		if (ent->d_type != DT_REG) {
+			continue; // anything other than a regular file is invalid
+		}
+
+		if (*ent->d_name == '.') {
+			continue; // don't care about '.', '..', & other entries starting with a dot
+		}
+
+		char* path;
+		asprintf(&path, "/etc/init/services/%s", ent->d_name);
+
+		// okay! add the service
+
+		service_t* service = new_service(ent->d_name);
+		service->path = path;
+
+		service = realloc(services, ++services_len * sizeof *services);
+		services[services_len - 1] = service;
+
+		fill_aquabsd_service(service);
+	}
+
+	closedir(dp);
 
 	// resolve service dependencies (this is where we build the dependency graph)
 	// yeah, this code has a pretty horrid time complexity  O(n^2), can absolutely do better (O(n) ideally assuming no hashmap collisions)
