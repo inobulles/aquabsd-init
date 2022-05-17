@@ -612,28 +612,14 @@ int main(int argc, char* argv[]) {
 
 	// make sure the $SERVICE_GROUP group exists, and error if not
 
-	int group_len = getgroups(0, NULL);
+	struct group* service_group = getgrnam(SERVICE_GROUP);
 
-	gid_t* gids = malloc(group_len * sizeof *gids);
-	getgroups(group_len, gids);
-
-	gid_t service_gid = -1 /* i.e., no $SERVICE_GROUP group */;
-
-	for (int i = 0; i < group_len; i++) {
-		gid_t gid = gids[group_len];
-		struct group* group = getgrgid(gid); // don't need to free this as per manpage
-
-		printf("%p\n", group);
-
-		if (strcmp(group->gr_name, SERVICE_GROUP) == 0) {
-			service_gid = gid;
-			break;
-		}
-	}
-
-	if (service_gid < 0) {
+	if (!service_group) {
 		FATAL_ERROR("Couldn't find \"" SERVICE_GROUP "\" group\n");
 	}
+
+	gid_t service_gid = service_group->gr_gid;
+	endgrent();
 
 	// make sure a message queue named $MQ_NAME doesn't already exist to ensure only one instance of init is running at a time
 
