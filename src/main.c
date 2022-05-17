@@ -731,7 +731,7 @@ int main(int argc, char* argv[]) {
 		service_t* service = new_service(ent->d_name);
 		service->path = path;
 
-		service = realloc(services, ++services_len * sizeof *services);
+		services = realloc(services, ++services_len * sizeof *services);
 		services[services_len - 1] = service;
 
 		fill_aquabsd_service(service);
