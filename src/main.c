@@ -698,10 +698,12 @@ int main(int argc, char* argv[]) {
 		service_t* service = new_service(ent->d_name);
 		service->path = path;
 
+		if (fill_research_service(service) < 0) {
+			continue;
+		}
+
 		services = realloc(services, ++services_len * sizeof *services);
 		services[services_len - 1] = service;
-
-		fill_research_service(service);
 	}
 
 	closedir(dp);
@@ -731,10 +733,12 @@ int main(int argc, char* argv[]) {
 		service_t* service = new_service(ent->d_name);
 		service->path = path;
 
+		if (fill_aquabsd_service(service) < 0) {
+			continue;
+		}
+
 		services = realloc(services, ++services_len * sizeof *services);
 		services[services_len - 1] = service;
-
-		fill_aquabsd_service(service);
 	}
 
 	closedir(dp);
