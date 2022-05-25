@@ -25,6 +25,9 @@
 #include <mqueue.h>
 #include <libutil.h>
 
+#include <umber.h>
+#define UMBER_COMPONENT "MOTHER"
+
 #define LOG_SIGNATURE "[init]"
 
 #define LOG_REGULAR "\033[0m"
@@ -32,22 +35,9 @@
 #define LOG_GREEN   "\033[0;32m"
 #define LOG_YELLOW  "\033[0;33m"
 
-static bool verbose = false;
-
-#define LOG(...) \
-	if (verbose) { \
-		printf(LOG_SIGNATURE LOG_REGULAR " " __VA_ARGS__); \
-	}
-
 #define FATAL_ERROR(...) \
-	fprintf(stderr, LOG_SIGNATURE LOG_RED " ERROR "__VA_ARGS__); \
-	fprintf(stderr, LOG_REGULAR); \
-	\
+	LOG_FATAL(__VA_ARGS__); \
 	exit(EXIT_FAILURE);
-
-#define WARN(...) \
-	fprintf(stderr, LOG_SIGNATURE LOG_YELLOW " WARNING "__VA_ARGS__); \
-	fprintf(stderr, LOG_REGULAR);
 
 #define MQ_NAME "/init"
 #define SERVICE_GROUP "service" // TODO find a more creative name
@@ -60,7 +50,7 @@ static bool verbose = false;
 
 typedef enum {
 	SERVICE_KIND_GENERIC,
-	SERVICE_KIND_RESEARCH, // for research Unix-style runcom scripts
+	SERVICE_KIND_RESEARCH, // for research UNIX-style runcom scripts
 	SERVICE_KIND_AQUABSD,
 } service_kind_t;
 
@@ -257,7 +247,7 @@ static int fill_research_service(service_t* service) {
 		KEYWORD("nojailvnet", disable_in_vnet_jail, true )
 
 		else {
-			WARN("Unknown research Unix-style service keyword '%s'\n", str)
+			LOG_WARN("Unknown research UNIX-style service keyword '%s'", str)
 		}
 
 		#undef KEYWORD
@@ -279,6 +269,8 @@ static int fill_research_service(service_t* service) {
 
 	#undef FREE
 
+	LOG_VERBOSE("Filled research UNIX-style service %s", service->name)
+
 	return 0;
 }
 
@@ -294,7 +286,7 @@ static int fill_aquabsd_service(service_t* service) {
 	service->aquabsd.lib = dlopen(service->path, RTLD_NOW);
 
 	if (!service->aquabsd.lib) {
-		WARN("dlopen: failed to load %s: %s\n", service->path, dlerror())
+		LOG_WARN("dlopen: failed to load %s: %s", service->path, dlerror())
 		return -1;
 	}
 
@@ -305,7 +297,7 @@ static int fill_aquabsd_service(service_t* service) {
 	service->aquabsd.start = dlsym(service->aquabsd.lib, "start");
 
 	if (!service->aquabsd.start) {
-		WARN("aquaBSD services must have start symbol\n")
+		LOG_WARN("aquaBSD services must have start symbol")
 
 		dlclose(service->aquabsd.lib);
 		return -1;
@@ -317,7 +309,7 @@ static int fill_aquabsd_service(service_t* service) {
 	get_dep_names_func_t get_dep_names = dlsym(service->aquabsd.lib, "get_dep_names");
 
 	if (!get_deps_len || !get_dep_names) {
-		WARN("aquaBSD services must have get_deps_len & get_dep_names symbols\n")
+		LOG_WARN("aquaBSD services must have get_deps_len & get_dep_names symbols")
 
 		dlclose(service->aquabsd.lib);
 		return -1;
@@ -341,6 +333,8 @@ static int fill_aquabsd_service(service_t* service) {
 
 	FLAG(disable_in_jail     )
 	FLAG(disable_in_vnet_jail)
+
+	LOG_VERBOSE("Filled aquaBSD service %s", service->name)
 
 	return 0;
 }
@@ -408,10 +402,9 @@ static void* service_thread(void* _service) {
 	// TODO what if a dependant process somehow manages to lock the mutex before us?
 
 	pthread_mutex_lock(&service->mutex);
+	LOG_VERBOSE("%s waiting for dependencies to complete", service->name)
 
-	// printf("[\033[0;34mWAITING\033[0m ] %s\n", service->name);
-
-	// wait for dependencies to finish
+	// wait for dependencies to complete
 
 	for (size_t i = 0; i < service->deps_len; i++) {
 		service_t* dep = service->deps[i];
@@ -432,7 +425,7 @@ static void* service_thread(void* _service) {
 
 	// record start time
 
-	printf("[\033[0;34mSTARTING\033[0m] %s\n", service->name);
+	LOG_INFO("Starting %s", service->name)
 	service->start_time = __get_time();
 
 	// create new process for service in question
@@ -465,11 +458,11 @@ static void* service_thread(void* _service) {
 	int rv = __wait_for_process(service->pid);
 
 	if (rv) {
-		WARN("Something went wrong running the %s service at '%s'\n", service->name, service->path)
+		LOG_WARN("Something went wrong running the %s service at '%s'", service->name, service->path)
 	}
 
 	pthread_mutex_unlock(&service->mutex);
-	printf("[\033[0;35mFINISHED\033[0m] %s\n", service->name);
+	LOG_SUCCESS("Completed %s", service->name)
 
 	// compute total time service took
 
@@ -505,7 +498,7 @@ static void start_on_start_services(size_t services_len, service_t** services) {
 		pthread_mutex_init(&service->mutex, NULL);
 		pthread_create(&service->thread, NULL, service_thread, service);
 
-		// printf("[THRCREAT] %s (%p)\n", service->name, service->thread);
+		LOG_VERBOSE("Thread created for %s: %p", service->name, service->thread)
 	}
 }
 
@@ -594,14 +587,7 @@ int main(int argc, char* argv[]) {
 
 	for (int i = 1; i < argc; i++) {
 		char* option = argv[i];
-
-		if (strcmp(option, "--verbose") == 0) {
-			verbose = true;
-		}
-
-		else {
-			WARN("Unknown option (%s)\n", option)
-		}
+		FATAL_ERROR("Unknown option (%s)", option)
 	}
 
 	// make sure we're root
@@ -609,7 +595,7 @@ int main(int argc, char* argv[]) {
 	uid_t uid = getuid();
 
 	if (uid) {
-		FATAL_ERROR("Must be run as root user 😢 (UID = 0, current UID = %d)\n", uid)
+		FATAL_ERROR("Must be run as root user 😢 (UID = 0, current UID = %d)", uid)
 	}
 
 	// make sure the $SERVICE_GROUP group exists, and error if not
@@ -617,7 +603,7 @@ int main(int argc, char* argv[]) {
 	struct group* service_group = getgrnam(SERVICE_GROUP);
 
 	if (!service_group) {
-		FATAL_ERROR("Couldn't find \"" SERVICE_GROUP "\" group\n");
+		FATAL_ERROR("Couldn't find \"" SERVICE_GROUP "\" group");
 	}
 
 	gid_t service_gid = service_group->gr_gid;
@@ -628,7 +614,7 @@ int main(int argc, char* argv[]) {
 	mode_t permissions = 0420; // owner ("root") can only read, group ($SERVICE_GROUP) can only write, and others can do neither
 
 	if (mq_open(MQ_NAME, O_CREAT | O_EXCL, permissions, NULL /* defaults are probably fine */) < 0 && errno == EEXIST) {
-		FATAL_ERROR("Only one instance of init may be running at a time 😢\n")
+		FATAL_ERROR("Only one instance of init may be running at a time 😢")
 	}
 
 	// create message queue
@@ -647,7 +633,7 @@ int main(int argc, char* argv[]) {
 
 	// actually start launching processes
 
-	LOG("aquaBSD init\n")
+	LOG_INFO("MOTHER\n")
 
 	// NOTES (cf. rc.d(8)):
 	//  - autoboot=yes/rc_fast=yes for skipping checks and speeding stuff up
@@ -664,7 +650,7 @@ int main(int argc, char* argv[]) {
 	DIR* dp = opendir("/etc/init/services");
 
 	if (!dp) {
-		FATAL_ERROR("opendir(\"/etc/init/services\"): %s\n", strerror(errno))
+		FATAL_ERROR("opendir(\"/etc/init/services\"): %s", strerror(errno))
 	}
 
 	struct dirent* ent;
@@ -696,12 +682,12 @@ int main(int argc, char* argv[]) {
 
 	closedir(dp);
 
-	// read all the legacy research Unix-style services in '/etc/rc.d'
+	// read all the legacy research UNIX-style services in '/etc/rc.d'
 
 	/* DIR* */ dp = opendir("/etc/rc.d");
 
 	if (!dp) {
-		FATAL_ERROR("opendir(\"/etc/rc.d\"): %s\n", strerror(errno))
+		FATAL_ERROR("opendir(\"/etc/rc.d\"): %s", strerror(errno))
 	}
 
 	while ((ent = readdir(dp))) {
@@ -720,14 +706,14 @@ int main(int argc, char* argv[]) {
 
 		if (stat(path, &sb) < 0) {
 			free(path);
-			FATAL_ERROR("stat(\"%s\"): %s\n", path, strerror(errno))
+			FATAL_ERROR("stat(\"%s\"): %s", path, strerror(errno))
 		}
 
 		mode_t permissions = sb.st_flags & 0777;
 
 		if (permissions == 0555) {
 			free(path);
-			FATAL_ERROR("\"%s\" doesn't have the right permissions ('0%o', needs '0555')\n", ent->d_name, permissions)
+			FATAL_ERROR("\"%s\" doesn't have the right permissions ('0%o', needs '0555')", ent->d_name, permissions)
 		}
 
 		// okay! add the service
@@ -781,7 +767,7 @@ int main(int argc, char* argv[]) {
 	// print out timing information and exit
 
 	long double now = __get_time();
-	printf("== AQUABSD INIT TOOK %Lf SECONDS ==\n", now - start_time);
+	LOG_INFO("Took %Lf seconds", now - start_time)
 
 	char* longest_name = "unknown";
 	long double longest_time = 0.0;
@@ -801,7 +787,7 @@ int main(int argc, char* argv[]) {
 		longest_time = service->total_time;
 	}
 
-	printf("(longest %s at %Lf seconds)\n", longest_name, longest_time);
+	LOG_INFO("Longest service to complete was %s, at %Lf seconds", longest_name, longest_time)
 
 	exit(0);
 
@@ -832,7 +818,7 @@ int main(int argc, char* argv[]) {
 
 		// read message data & process it
 
-		char buf[256]; // TODO this will end up being some kind of command strutcure
+		char buf[256]; // TODO this will end up being some kind of command structure
 		__attribute__((unused)) unsigned priority; // we don't care about priority
 
 	retry: {} // fight me, this is more readable than a loop
@@ -844,12 +830,12 @@ int main(int argc, char* argv[]) {
 		}
 
 		if (errno == ETIMEDOUT) {
-			WARN("Receiving on the message queue timed out")
+			LOG_WARN("Receiving on the message queue timed out")
 			continue;
 		}
 
 		if (len < 0) {
-			WARN("mq_receive: %s", strerror(errno))
+			LOG_WARN("mq_receive: %s", strerror(errno))
 		}
 
 		// TODO process command somehow

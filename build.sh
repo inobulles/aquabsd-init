@@ -6,7 +6,7 @@ mkdir -p bin/services
 
 SERVICES_BIN_PATH=$(realpath bin/services)
 
-cc -g src/main.c -o bin/init -std=c11 -lpthread -lrt -lutil
+cc -g src/main.c -o bin/init -std=c11 -lpthread -lrt -lutil -lumber -I/usr/local/include -L/usr/local/lib
 
 (
 	cd src/services
