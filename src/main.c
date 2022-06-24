@@ -644,11 +644,15 @@ int main(int argc, char* argv[]) {
 
 	// check if we're in a jail or VNET jail
 
-	if (sysctlbyname("security.jail.jailed", &in_jail, NULL, NULL, 0) < 0) {
+	size_t len = sizeof(int);
+
+	if (sysctlbyname("security.jail.jailed", &in_jail, &len, NULL, 0) < 0) {
 		FATAL_ERROR("sysctlbyname(\"security.jail.jailed\"): %s", strerror(errno));
 	}
 
-	if (sysctlbyname("security.jail.vnet", &in_vnet, NULL, NULL, 0) < 0) {
+	len = sizeof(int);
+
+	if (sysctlbyname("security.jail.vnet", &in_vnet, &len, NULL, 0) < 0) {
 		FATAL_ERROR("sysctlbyname(\"security.jail.vnet\"): %s", strerror(errno));
 	}
 
