@@ -26,7 +26,7 @@
 #include <libutil.h>
 
 #include <umber.h>
-#define UMBER_COMPONENT "MOTHER"
+#define UMBER_COMPONENT "GAIA"
 
 #define FATAL_ERROR(...) \
 	LOG_FATAL(__VA_ARGS__); \
@@ -621,12 +621,12 @@ int main(int argc, char* argv[]) {
 	// set group ownership to the $SERVICE_GROUP group
 
 	// if (fchown(mq, uid /* most likely gonna be root */, service_gid) < 0) {
-	// 	FATAL_ERROR("fchown: %s\n", strerror(errno))
+	// 	FATAL_ERROR("fchown: %s", strerror(errno))
 	// }
 
 	// actually start launching processes
 
-	LOG_INFO("MOTHER\n")
+	LOG_INFO("Launch service processes")
 
 	// NOTES (cf. rc.d(8)):
 	//  - autoboot=yes/rc_fast=yes for skipping checks and speeding stuff up
