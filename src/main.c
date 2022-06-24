@@ -1,7 +1,6 @@
 // TODO:
 //  - rename this to whichever name I decide to land on (don't forget to do a quick ':%s/init/whatever/g')
 //  - support booting the system diskless (cf. '/etc/rc.initdiskless')
-//  - support booting within a jail (cf. 'service_t.disable_in_jail' & 'service_t.disable_in_vnet_jail')
 //  - perhaps a hashmap system for resolving dependencies in a better time complexity (similar to what rcorder(8) does on NetBSD)
 //  - record timing, which can I guess either be written to a log at some point or queried with some command
 
@@ -19,6 +18,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/wait.h>
 
 #include <grp.h>
@@ -32,6 +32,8 @@
 	LOG_FATAL(__VA_ARGS__); \
 	exit(EXIT_FAILURE);
 
+// defines
+
 #define MQ_NAME "/init"
 #define SERVICE_GROUP "service" // TODO find a more creative name
 
@@ -40,6 +42,8 @@
 
 #define INIT_ROOT "conf/init/"
 #define MOD_DIR INIT_ROOT "mods/"
+
+// types
 
 typedef enum {
 	SERVICE_KIND_GENERIC,
@@ -83,7 +87,7 @@ struct service_t {
 	bool first_boot;
 
 	bool disable_in_jail;
-	bool disable_in_vnet_jail;
+	bool disable_in_vnet;
 
 	// actual service stuff
 	// unfortunately, the C11 standard doesn't seem to support condition values/mutices, which basically makes it useless
@@ -107,6 +111,13 @@ struct service_t {
 	};
 };
 
+// global variables (🤮)
+
+static bool in_jail;
+static bool in_vnet;
+
+// functions
+
 static inline long double __get_time(void) {
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -123,14 +134,14 @@ static service_t* new_service(const char* name) {
 	// set defaults for service flags
 	// by default, a service is launched on start (on regular systems and any jails)
 
-	service->on_start             = true;
-	service->on_stop              = false;
-	service->on_resume            = false;
+	service->on_start        = true;
+	service->on_stop         = false;
+	service->on_resume       = false;
 
-	service->first_boot           = false;
+	service->first_boot      = false;
 
-	service->disable_in_jail      = false;
-	service->disable_in_vnet_jail = false;
+	service->disable_in_jail = false;
+	service->disable_in_vnet = false;
 
 	return service;
 }
@@ -230,14 +241,14 @@ static int fill_research_service(service_t* service) {
 
 		if (0) {}
 
-		KEYWORD("nostart",    on_start,             false)
-		KEYWORD("shutdown",   on_stop,              true )
-		KEYWORD("resume",     on_resume,            true )
+		KEYWORD("nostart",    on_start,        false)
+		KEYWORD("shutdown",   on_stop,         true )
+		KEYWORD("resume",     on_resume,       true )
 
-		KEYWORD("firstboot",  first_boot,           true )
+		KEYWORD("firstboot",  first_boot,      true )
 
-		KEYWORD("nojail",     disable_in_jail,      true )
-		KEYWORD("nojailvnet", disable_in_vnet_jail, true )
+		KEYWORD("nojail",     disable_in_jail, true )
+		KEYWORD("nojailvnet", disable_in_vnet, true )
 
 		else {
 			LOG_WARN("Unknown research UNIX-style service keyword '%s'", str)
@@ -318,14 +329,14 @@ static int fill_aquabsd_service(service_t* service) {
 			service->flag = true; \
 		}
 
-	FLAG(on_start            )
-	FLAG(on_stop             )
-	FLAG(on_resume           )
+	FLAG(on_start       )
+	FLAG(on_stop        )
+	FLAG(on_resume      )
 
-	FLAG(first_boot          )
+	FLAG(first_boot     )
 
-	FLAG(disable_in_jail     )
-	FLAG(disable_in_vnet_jail)
+	FLAG(disable_in_jail)
+	FLAG(disable_in_vnet)
 
 	LOG_VERBOSE("Filled aquaBSD service %s", service->name)
 
@@ -477,6 +488,14 @@ static void start_on_start_services(size_t services_len, service_t** services) {
 			continue;
 		}
 
+		if (in_jail && service->disable_in_jail) {
+			continue;
+		}
+
+		if (in_vnet && service->disable_in_vnet) {
+			continue;
+		}
+
 		if (service->thread_created) {
 			continue;
 		}
@@ -506,7 +525,6 @@ static void join_services(size_t services_len, service_t** services) {
 		if (!service->thread_created) {
 			continue;
 		}
-
 
 		__attribute__((unused)) void* rv = NULL;
 		pthread_join(service->thread, &rv);
@@ -623,6 +641,16 @@ int main(int argc, char* argv[]) {
 	// if (fchown(mq, uid /* most likely gonna be root */, service_gid) < 0) {
 	// 	FATAL_ERROR("fchown: %s", strerror(errno))
 	// }
+
+	// check if we're in a jail or VNET jail
+
+	if (sysctlbyname("security.jail.jailed", &in_jail, NULL, NULL, 0) < 0) {
+		FATAL_ERROR("sysctlbyname(\"security.jail.jailed\"): %s", strerror(errno));
+	}
+
+	if (sysctlbyname("security.jail.vnet", &in_vnet, NULL, NULL, 0) < 0) {
+		FATAL_ERROR("sysctlbyname(\"security.jail.vnet\"): %s", strerror(errno));
+	}
 
 	// actually start launching processes
 
