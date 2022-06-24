@@ -28,13 +28,6 @@
 #include <umber.h>
 #define UMBER_COMPONENT "MOTHER"
 
-#define LOG_SIGNATURE "[init]"
-
-#define LOG_REGULAR "\033[0m"
-#define LOG_RED     "\033[0;31m"
-#define LOG_GREEN   "\033[0;32m"
-#define LOG_YELLOW  "\033[0;33m"
-
 #define FATAL_ERROR(...) \
 	LOG_FATAL(__VA_ARGS__); \
 	exit(EXIT_FAILURE);
