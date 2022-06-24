@@ -587,7 +587,7 @@ int main(int argc, char* argv[]) {
 
 	for (int i = 1; i < argc; i++) {
 		char* option = argv[i];
-		FATAL_ERROR("Unknown option (%s)", option)
+		LOG_ERROR("Unknown option (%s)", option)
 	}
 
 	// make sure we're root
